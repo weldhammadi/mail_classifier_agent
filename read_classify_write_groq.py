@@ -1,17 +1,12 @@
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from collections import defaultdict
-from sumy.parsers.plaintext import PlaintextParser
-from sumy.nlp.tokenizers import Tokenizer
-from sumy.summarizers.lsa import LsaSummarizer  # can swap with LexRank, Luhn, etc.
 from groq import Groq
 import base64
-import re
 import time
 import os
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
-import requests
 import json
 from dotenv import load_dotenv
 
@@ -22,8 +17,6 @@ def read_file(path, encoding="utf-8"):
         return f.read()
 load_dotenv()
 # ---------------- LLM CONFIG ----------------
-GROQ_MODEL = "gpt-oss-20b"  # Your model name
-
 
 GROQ_API_URL = "https://api.groq.com/v1/completions"
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
@@ -35,13 +28,12 @@ client = Groq(api_key=GROQ_API_KEY)
 SHEET_NAME = None
 SHEET_ID = "1KxmEfDlo5Wyzy5F8jd-pq8ARPWti1z2PEFdtlQbiUQU"
 
-# Map category names to worksheet/tab IDs (replace the numbers with your actual worksheet IDs from Google Sheets)
 CATEGORY_TAB_IDS = {
-    "Problème technique informatique": 1,  # Replace 0 with the actual gid for this tab
-    "Demande administrative": 2,  # Replace with actual gid
-    "Problème d’accès / authentification": 3,  # Replace with actual gid
-    "Demande de support utilisateur": 4,  # Replace with actual gid
-    "Bug / Dysfonctionnement": 5  # Replace with actual gid
+    "Problème technique informatique": 1,
+    "Demande administrative": 2, 
+    "Problème d’accès / authentification": 3,
+    "Demande de support utilisateur": 4,  
+    "Bug / Dysfonctionnement": 5  
 }
 
 # Gmail API scopes
@@ -73,7 +65,7 @@ def get_gmail_service():
 def list_message_ids(service, query='in:inbox'):
     """List all message IDs matching a query"""
     messages = []
-    request = service.users().messages().list(userId='me', q=query, maxResults=500)
+    request = service.users().messages().list(userId='me', q=query, maxResults=10)
     while request:
         response = request.execute()
         messages.extend(response.get('messages', []))
@@ -106,34 +98,32 @@ def get_body_from_payload(payload):
 # ---------------- CLASSIFICATION FUNCTIONS ----------------
 
 def classify_and_summarize_with_llm(subject, body):
-
-    
     context_text = read_file("agents/context.txt")
     prompt_text = read_file("agents/prompt.txt")
+
     completion = client.chat.completions.create(
-        messages=[
-            {
-                "role": "system",
-                "content": context_text,
-            },
-            {
-                "role": "user",
-                "content": f'{prompt_text}\n\nEmail subject: "{subject}" Email body: "{body}"',
-            }
-        ],
-        response_format={"type": "json_object"},
         model="openai/gpt-oss-20b",
         temperature=0,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": context_text},
+            {
+                "role": "user",
+                "content": (
+                    f"{prompt_text}\n\n"
+                    f"Email subject: {subject}\n"
+                    f"Email body: {body[:2500]}"  
+                )
+            }
+        ]
     )
-    
+
     text = completion.choices[0].message.content.strip()
     try:
-        import json
         result = json.loads(text)
         return result["category"], result["urgency"], result["summary"]
     except Exception as e:
         print("LLM JSON parse error:", e)
-        # fallback
         return "Demande de support utilisateur", "Anodine", body[:200]
 
 
@@ -169,10 +159,15 @@ def write_tickets(spreadsheet, rows_by_category, batch_delay=1):
 # ---------------- MAIN PIPELINE ----------------
 if __name__ == '__main__':
     # Connect to Gmail
+    print("*-------------------------step 1 -------------------------*")
     service = get_gmail_service()
     messages = list_message_ids(service, query='in:inbox')
     print(f"{len(messages)} emails found.")
     
+    
+    
+    
+    print("*-------------------------step 2-------------------------*")
     # Collect tickets per category
     rows_by_category = defaultdict(list)
     total = len(messages[:5])
@@ -183,13 +178,20 @@ if __name__ == '__main__':
         category, urgency, summary = classify_and_summarize_with_llm(email_data['subject'], email_data['body'])
         print(f"Response{idx} received...")
         time.sleep(1)
-        rows_by_category[category].append([email_data['subject'], urgency, summary])
+        rows_by_category[category].append([email_data['body'], urgency, summary])
         print(f"Processed: {email_data['subject']} → {category} ({urgency})")
-    
+        
+        
+        
+        
+    print("*-------------------------step 3 -------------------------*")
     # Open or create spreadsheet
     spreadsheet = get_spreadsheet(SHEET_ID, SHEET_NAME)
     
+    
+    
+    
+    print("*-------------------------step 4 -------------------------*")
     # Write tickets in batch
     write_tickets(spreadsheet, rows_by_category)
-    
     print("All tickets processed and written successfully!")
